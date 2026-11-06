@@ -1,38 +1,51 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>88-Key Piano</title>
+    <title>VRChat虚拟钢琴</title>
 
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="piano-container">
-        <h1 class="piano-title">🎹 88-Key Piano</h1>
-
-        <div class="controls">
-            <div class="control-group">
-                <label>Volume</label>
-                <input type="range" id="volume" min="0" max="100" value="50">
-            </div>
-            <div class="control-group">
-                <label>Reverb</label>
-                <input type="range" id="reverb" min="0" max="100" value="20">
-            </div>
-            <div class="control-group">
-                <label>Octave</label>
-                <input type="range" id="octave" min="-2" max="2" value="0">
+    <main class="page">
+        <!-- 上方内容区（超高时可滚动，键盘始终留在底部） -->
+        <div class="stage">
+        <!-- 控制条 -->
+        <div class="control-bar">
+            <div class="control-item">
+                <span class="control-label">延音踏板</span>
+                <button type="button" id="sustain-switch" class="switch" role="switch" aria-checked="true">
+                    <span class="switch-thumb"></span>
+                </button>
             </div>
         </div>
 
-        <div class="piano" id="piano">
+        <!-- 读谱面板 -->
+        <div class="score-panel">
+            <div class="score-toolbar">
+                <span class="control-label">读谱</span>
+                <select id="score-mode">
+                    <option value="auto">自动播放</option>
+                    <option value="follow">跟弹练习</option>
+                </select>
+                <label class="tempo-label">速度
+                    <input type="number" id="score-tempo" value="100" min="40" max="240" step="5">
+                    BPM
+                </label>
+                <button type="button" id="score-play" class="score-btn">播放</button>
+                <button type="button" id="score-stop" class="score-btn">停止</button>
+            </div>
+            <textarea id="score-input" rows="3" placeholder="粘贴数字简谱，如：1 6.7. 1 3 | 5 5 3 | 5. 3 2 1 2 7.&#10;（数字1-7，#开头为升半音，尾部.为低八度，'为高八度，0为休止，-为延长）"></textarea>
+            <div class="score-strip" id="score-strip"></div>
         </div>
+        </div><!-- /.stage -->
 
-        <div class="octave-indicator">
-            Octave Shift: <span id="octave-display">0</span> | Sustain Pedal: Hold the <strong>Space</strong> key
+        <!-- 键盘 -->
+        <div class="keyboard-scroll">
+            <div class="keyboard" id="piano"></div>
         </div>
-    </div>
+    </main>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 
