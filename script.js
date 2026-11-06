@@ -1,357 +1,462 @@
 
-class Piano {
-		constructor() {
-				this.synth = null;
-				this.reverb = null;
-				this.volume = null;
-				this.activeNotes = new Map();
-				this.noteTimeouts = new Map(); // For automatic fadeout
-				this.volumeLevel = 0.5;
-				this.reverbAmount = 0.2;
-				this.octaveShift = 0;
-				this.sustainPedal = false;
-				this.sustainedNotes = new Set();
+// 61键虚拟钢琴 —— 键位映射（高音在 F 键排，逐行向下：F排→数字排→QWET→ASD→ZXC）
+// [音名, 按键显示, KeyboardEvent.code]
+const WHITE_KEYS = [
+	// 第1个八度：ZXCV 排（跳过 V）
+	['C2', 'Z', 'KeyZ'], ['D2', 'X', 'KeyX'], ['E2', 'C', 'KeyC'],
+	['F2', 'B', 'KeyB'], ['G2', 'N', 'KeyN'], ['A2', 'M', 'KeyM'], ['B2', ',', 'Comma'],
+	// 第2个八度：ASDF 排
+	['C3', 'A', 'KeyA'], ['D3', 'S', 'KeyS'], ['E3', 'D', 'KeyD'],
+	['F3', 'F', 'KeyF'], ['G3', 'G', 'KeyG'], ['A3', 'H', 'KeyH'], ['B3', 'J', 'KeyJ'],
+	// 第3个八度：QWET 排（跳过 R、Y）
+	['C4', 'Q', 'KeyQ'], ['D4', 'W', 'KeyW'], ['E4', 'E', 'KeyE'],
+	['F4', 'T', 'KeyT'], ['G4', 'U', 'KeyU'], ['A4', 'I', 'KeyI'], ['B4', 'O', 'KeyO'],
+	// 第4个八度：数字排
+	['C5', '1', 'Digit1'], ['D5', '2', 'Digit2'], ['E5', '3', 'Digit3'],
+	['F5', '4', 'Digit4'], ['G5', '5', 'Digit5'], ['A5', '6', 'Digit6'], ['B5', '7', 'Digit7'],
+	// 第5个八度：F 键排（1''-7''）
+	['C6', 'F1', 'F1'], ['D6', 'F2', 'F2'], ['E6', 'F3', 'F3'],
+	['F6', 'F4', 'F4'], ['G6', 'F5', 'F5'], ['A6', 'F6', 'F6'], ['B6', 'F7', 'F7'],
+	// 最高音
+	// ['C7', '', ''],
+];
 
-				this.init();
-				this.createPianoKeys();
-				this.setupControls();
-				this.setupKeyboardListeners();
-		}
+const BLACK_KEYS = [
+	// 第1个八度黑键：ZXCV 排右侧 + 小键盘
+	['C#2', '.', 'Period'], ['D#2', '/', 'Slash'], ['F#2', '⇧', 'ShiftRight'],
+	['G#2', 'N0', 'Numpad0'], ['A#2', 'N.', 'NumpadDecimal'],
+	// 第2个八度黑键：ASDF 排右侧 + 小键盘
+	['C#3', 'K', 'KeyK'], ['D#3', 'L', 'KeyL'], ['F#3', ';', 'Semicolon'],
+	['G#3', 'N2', 'Numpad2'], ['A#3', 'N3', 'Numpad3'],
+	// 第3个八度黑键：QWET 排右侧 + 小键盘
+	['C#4', 'P', 'KeyP'], ['D#4', '[', 'BracketLeft'], ['F#4', ']', 'BracketRight'],
+	['G#4', 'N5', 'Numpad5'], ['A#4', 'N6', 'Numpad6'],
+	// 第4个八度黑键：数字排后半 + 小键盘
+	['C#5', '8', 'Digit8'], ['D#5', '9', 'Digit9'], ['F#5', '0', 'Digit0'],
+	['G#5', 'N8', 'Numpad8'], ['A#5', 'N9', 'Numpad9'],
+	// 第5个八度黑键：F8-F9 + 小键盘
+	['C#6', 'F8', 'F8'], ['D#6', 'F9', 'F9'], ['F#6', 'F10', 'F10'],
+	['G#6', '/', 'NumpadDivide'], ['A#6', '*', 'NumpadMultiply'],
+];
 
-		async init() {
-				try {
-						// Initialize Tone.js
-						await Tone.start();
-
-						// Prepare sample files for 88-key piano (A0-C8)
-						// Only as example: adding C, D, E, F, G, A, B notes and octaves
-						// File names in Media folder should be like: Piano.ff.C4.mp3
-						const notes = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#'];
-						const urls = {};
-						// A0 (21) - C8 (108)
-						for (let midi = 21; midi <= 108; midi++) {
-							let noteName = this.midiToNote(midi);
-							// Replace # with 'sharp' for file names
-							const fileNoteName = noteName.replace(/#/g, 'sharp');
-							urls[noteName] = `piano-note-key-${fileNoteName}.mp3`;
+// 简谱：音名 -> [数字, 上加点数, 下加点数]
+// 规则（与用户约定一致）：C4=1无点，C3起每低一个八度下加2/3点，C5起每高一个八度上加1/2/3点
+function jianpuOf(note) {
+	const names = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+	const sharp = note.includes('#');
+	const octave = parseInt(note.slice(-1));
+	const digit = names.indexOf(note[0]) + 1;
+	let dotsUp = 0, dotsDown = 0;
+	if (octave > 4) dotsUp = octave - 4;
+	else if (octave < 4) dotsDown = 4 - octave;
+	return { text: (sharp ? '#' : '') + digit, dotsUp, dotsDown };
 }
 
-						this.synth = new Tone.Sampler({
-								urls: urls,
-								baseUrl: './audio/',
-								onerror: (e) => { console.error('Sound could not be loaded:', e); }
-						});
+class Piano {
+	constructor() {
+		this.synth = null;
+		this.reverb = null;
+		this.volume = null;
+		this.activeNotes = new Map();
+		this.sustainOn = true;
+		this.sustainedNotes = new Set();
+		this.keyMap = {}; // KeyboardEvent.code -> MIDI
 
-						// Reverb and volume chain
-						this.reverb = new Tone.Reverb({
-								decay: 4,
-								wet: this.reverbAmount
-						});
-						this.volume = new Tone.Volume(-6);
-						this.synth.connect(this.reverb);
-						this.reverb.connect(this.volume);
-						this.volume.toDestination();
-				} catch (error) {
-						console.error('Audio initialization failed:', error);
-				}
+		// 读谱状态
+		this.score = [];        // 解析后的谱面 [{token, midi|null, beats}]
+		this.scoreIndex = 0;
+		this.playTimer = null;
+		this.followMode = false;
+
+		this.init();
+		this.createPianoKeys();
+		this.setupSustainSwitch();
+		this.setupKeyboardListeners();
+		this.setupScorePanel();
+	}
+
+	async init() {
+		try {
+			await Tone.start();
+
+			// Audio 钢琴采样：每小三度一个（C/D#/F#/A），覆盖 C2-A6
+			const urls = {
+				'C2': 'C2.mp3', 'D#2': 'Ds2.mp3', 'F#2': 'Fs2.mp3', 'A2': 'A2.mp3',
+				'C3': 'C3.mp3', 'D#3': 'Ds3.mp3', 'F#3': 'Fs3.mp3', 'A3': 'A3.mp3',
+				'C4': 'C4.mp3', 'D#4': 'Ds4.mp3', 'F#4': 'Fs4.mp3', 'A4': 'A4.mp3',
+				'C5': 'C5.mp3', 'D#5': 'Ds5.mp3', 'F#5': 'Fs5.mp3', 'A5': 'A5.mp3',
+				'C6': 'C6.mp3', 'D#6': 'Ds6.mp3', 'F#6': 'Fs6.mp3', 'A6': 'A6.mp3'
+			};
+
+			this.synth = new Tone.Sampler({
+				urls: urls,
+				baseUrl: './audio/',
+				onerror: (e) => { console.error('Sound could not be loaded:', e); }
+			});
+
+			this.reverb = new Tone.Reverb({ decay: 4, wet: 0.2 });
+			this.volume = new Tone.Volume(0);
+			this.synth.connect(this.reverb);
+			this.reverb.connect(this.volume);
+			this.volume.toDestination();
+		} catch (error) {
+			console.error('Audio initialization failed:', error);
+		}
+	}
+
+	noteToMidi(note) {
+		const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+		const octave = parseInt(note.slice(-1));
+		const index = notes.indexOf(note.slice(0, -1));
+		return (octave + 1) * 12 + index;
+	}
+
+	midiToNote(midiNote) {
+		const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+		return notes[(midiNote - 12) % 12] + Math.floor((midiNote - 12) / 12);
+	}
+
+	createPianoKeys() {
+		const piano = document.getElementById('piano');
+		const unit = 100 / 36;
+		const blackQueue = [...BLACK_KEYS];
+		let whiteCount = 0;
+
+		for (const [note, label, code] of WHITE_KEYS) {
+			whiteCount++;
+			this.createKey(piano, note, label, code, true);
+
+			// 该白键右侧若有对应黑键（C->C#, D->D#, F->F#, G->G#, A->A#）
+			const sharp = note[0] + '#' + note.slice(1);
+			const idx = blackQueue.findIndex(b => b[0] === sharp);
+			if (idx !== -1) {
+				const [bNote, bLabel, bCode] = blackQueue.splice(idx, 1)[0];
+				this.createKey(piano, bNote, bLabel, bCode, false, (whiteCount - 0.3) * unit, unit * 0.6);
+			}
+		}
+	}
+
+	createKey(piano, note, label, code, isWhite, leftPct, widthPct) {
+		const midi = this.noteToMidi(note);
+		this.keyMap[code] = midi;
+
+		const wrapper = document.createElement('div');
+		if (isWhite) {
+			wrapper.className = 'white-cell';
+		} else {
+			wrapper.className = 'black-wrap';
+			wrapper.style.left = `${leftPct}%`;
+			wrapper.style.width = `${widthPct}%`;
 		}
 
-		createPianoKeys() {
-				const piano = document.getElementById('piano');
-				const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-				const whiteNotes = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
-				const blackNotes = ['C#', 'D#', 'F#', 'G#', 'A#'];
+		const key = document.createElement('div');
+		key.className = `key ${isWhite ? 'white-key' : 'black-key'}`;
+		key.dataset.midi = midi;
 
-				// A0 is MIDI note 21, C8 is MIDI note 108
-				// 88 keys total from A0 to C8
-				let keyCount = 0;
-
-				// Start with A0, A#0, B0
-				this.createKey(piano, 'A', 0, 21, true, keyCount++);
-				this.createKey(piano, 'A#', 0, 22, false, keyCount++);
-				this.createKey(piano, 'B', 0, 23, true, keyCount++);
-
-				// C1 to B7 (full octaves)
-				for (let octave = 1; octave <= 7; octave++) {
-						for (let i = 0; i < 12; i++) {
-								const note = notes[i];
-								const midiNote = 24 + (octave - 1) * 12 + i; // C1 = 24
-								const isWhite = whiteNotes.includes(note);
-								this.createKey(piano, note, octave, midiNote, isWhite, keyCount++);
-						}
-				}
-
-				// Final C8
-				this.createKey(piano, 'C', 8, 108, true, keyCount++);
-
-				// Position black keys
-				this.positionBlackKeys();
+		// 简谱标签（含上下加点）
+		const jp = jianpuOf(note);
+		const jpEl = document.createElement('span');
+		jpEl.className = 'jianpu';
+		if (jp.dotsUp) {
+			const d = document.createElement('i');
+			d.className = 'dots';
+			d.textContent = '•'.repeat(jp.dotsUp);
+			jpEl.appendChild(d);
+		}
+		const t = document.createElement('b');
+		t.textContent = jp.text;
+		jpEl.appendChild(t);
+		if (jp.dotsDown) {
+			const d = document.createElement('i');
+			d.className = 'dots';
+			d.textContent = '•'.repeat(jp.dotsDown);
+			jpEl.appendChild(d);
 		}
 
-		createKey(container, note, octave, midiNote, isWhite, index) {
-				const key = document.createElement('div');
-				key.className = `key ${isWhite ? 'white-key' : 'black-key'}`;
-				key.dataset.note = note;
-				key.dataset.octave = octave;
-				key.dataset.midi = midiNote;
-				key.dataset.index = index;
+		// 按键徽章
+		const badge = document.createElement('span');
+		badge.className = 'key-badge';
+		badge.textContent = label;
 
-				// Add note label for white keys
-				if (isWhite) {
-						const label = document.createElement('div');
-						label.className = 'key-label';
-						label.textContent = `${note}${octave}`;
-						key.appendChild(label);
-				}
+		key.append(jpEl, badge);
+		wrapper.appendChild(key);
+		piano.appendChild(wrapper);
 
+		this.bindKeyEvents(key, midi);
+	}
 
-				key.addEventListener('mousedown', (e) => {
-						e.preventDefault();
-						this.playNote(midiNote, true);
-						key.classList.add('active');
-				});
+	bindKeyEvents(key, midi) {
+		key.addEventListener('mousedown', (e) => {
+			e.preventDefault();
+			this.playNote(midi);
+			key.classList.add('active');
+			this.checkFollow(midi);
+		});
+		key.addEventListener('mouseup', () => {
+			this.stopNote(midi);
+			key.classList.remove('active');
+		});
+		key.addEventListener('mouseleave', () => {
+			this.stopNote(midi);
+			key.classList.remove('active');
+		});
+	}
 
-				key.addEventListener('mouseup', () => {
-						this.stopNote(midiNote);
-						key.classList.remove('active');
-				});
-
-				key.addEventListener('mouseleave', () => {
-						this.stopNote(midiNote);
-						key.classList.remove('active');
-				});
-
-				container.appendChild(key);
+	async playNote(midiNote) {
+		if (!this.synth) {
+			await this.init();
 		}
 
-		positionBlackKeys() {
-				const whiteKeys = document.querySelectorAll('.white-key');
-				const blackKeys = document.querySelectorAll('.black-key');
+		const noteName = this.midiToNote(midiNote);
 
-				let blackKeyIndex = 0;
-				let whiteKeyIndex = 0;
-
-				blackKeys.forEach(blackKey => {
-						const note = blackKey.dataset.note;
-						const octave = parseInt(blackKey.dataset.octave);
-
-				// Find the corresponding white key to position relative to
-				let targetWhiteKey;
-
-						if (note === 'C#' || note === 'A#') {
-								// Position between C-D or A-B
-								const baseNote = note === 'C#' ? 'C' : 'A';
-								targetWhiteKey = Array.from(whiteKeys).find(k =>
-										k.dataset.note === baseNote &&
-										parseInt(k.dataset.octave) === octave
-								);
-								if (targetWhiteKey) {
-										blackKey.style.left = `${targetWhiteKey.offsetLeft + 22}px`;
-								}
-						} else if (note === 'D#') {
-								// Position between D-E
-								targetWhiteKey = Array.from(whiteKeys).find(k =>
-										k.dataset.note === 'D' &&
-										parseInt(k.dataset.octave) === octave
-								);
-								if (targetWhiteKey) {
-										blackKey.style.left = `${targetWhiteKey.offsetLeft + 22}px`;
-								}
-						} else if (note === 'F#') {
-								// Position between F-G
-								targetWhiteKey = Array.from(whiteKeys).find(k =>
-										k.dataset.note === 'F' &&
-										parseInt(k.dataset.octave) === octave
-								);
-								if (targetWhiteKey) {
-										blackKey.style.left = `${targetWhiteKey.offsetLeft + 22}px`;
-								}
-						} else if (note === 'G#') {
-								// Position between G-A
-								targetWhiteKey = Array.from(whiteKeys).find(k =>
-										k.dataset.note === 'G' &&
-										parseInt(k.dataset.octave) === octave
-								);
-								if (targetWhiteKey) {
-										blackKey.style.left = `${targetWhiteKey.offsetLeft + 22}px`;
-								}
-						}
-				});
+		if (this.activeNotes.has(midiNote)) {
+			this.stopNote(midiNote, true);
 		}
 
-		midiToNote(midiNote) {
-				const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-				const octave = Math.floor((midiNote - 12) / 12);
-				const noteIndex = (midiNote - 12) % 12;
-				return notes[noteIndex] + octave;
+		this.synth.triggerAttack(noteName);
+		this.activeNotes.set(midiNote, noteName);
+	}
+
+	stopNote(midiNote, force = false) {
+		if (!this.activeNotes.has(midiNote)) return;
+
+		if (this.sustainOn && !force) {
+			this.sustainedNotes.add(midiNote);
+			return;
 		}
 
-		async playNote(midiNote, isPress = false) {
-				if (!this.synth) {
-						await this.init();
-				}
+		this.synth.triggerRelease(this.activeNotes.get(midiNote));
+		this.activeNotes.delete(midiNote);
+		this.sustainedNotes.delete(midiNote);
+	}
 
-				const adjustedMidi = midiNote + (this.octaveShift * 12);
-				const noteName = this.midiToNote(adjustedMidi);
+	setSustain(on) {
+		this.sustainOn = on;
+		document.getElementById('sustain-switch').setAttribute('aria-checked', String(on));
 
-				// Stop existing note if playing
+		if (!on) {
+			this.sustainedNotes.forEach(midiNote => {
 				if (this.activeNotes.has(midiNote)) {
-						this.stopNote(midiNote);
+					this.synth.triggerRelease(this.activeNotes.get(midiNote));
+					this.activeNotes.delete(midiNote);
 				}
+			});
+			this.sustainedNotes.clear();
+		}
+	}
 
-				// Play the sample (velocity parameter is not available in Sampler, only in PolySynth)
-				this.synth.triggerAttack(noteName);
-				this.activeNotes.set(midiNote, {
-						noteName,
-						isPlaying: true,
-						startTime: Tone.now()
-				});
+	setupSustainSwitch() {
+		document.getElementById('sustain-switch').addEventListener('click', () => {
+			this.setSustain(!this.sustainOn);
+		});
+	}
+
+	setupKeyboardListeners() {
+		const pressedKeys = new Set();
+
+		document.addEventListener('keydown', (e) => {
+			// 在输入框中打字时不触发琴键
+			if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+
+			const midiNote = this.keyMap[e.code];
+			if (midiNote === undefined) return;
+
+			// 阻止浏览器默认行为（F1帮助、F5刷新、Tab切焦点、空格滚动等）
+			e.preventDefault();
+			if (e.repeat || pressedKeys.has(e.code)) return;
+
+			pressedKeys.add(e.code);
+			this.playNote(midiNote);
+
+			const key = document.querySelector(`[data-midi="${midiNote}"]`);
+			if (key) key.classList.add('active');
+
+			this.checkFollow(midiNote);
+		});
+
+		document.addEventListener('keyup', (e) => {
+			const midiNote = this.keyMap[e.code];
+			if (midiNote === undefined) return;
+
+			pressedKeys.delete(e.code);
+			this.stopNote(midiNote);
+
+			const key = document.querySelector(`[data-midi="${midiNote}"]`);
+			if (key) key.classList.remove('active');
+		});
+	}
+
+	/* ================= 读谱功能 ================= */
+
+	setupScorePanel() {
+		document.getElementById('score-play').addEventListener('click', () => this.startScore());
+		document.getElementById('score-stop').addEventListener('click', () => this.stopScore());
+		document.getElementById('score-mode').addEventListener('change', () => this.stopScore());
+	}
+
+	// 解析数字简谱文本：#开头升半音，尾部.低八度，'高八度，0休止，-延长一拍
+	parseScore(text) {
+		const tokens = text.match(/#?[0-7][.']*|[-~—–|]|\n/g) || [];
+		const score = [];
+		let latestToken = '';
+		for (const tk of tokens) {
+			let ltk = latestToken;
+			latestToken = tk;
+			if (ltk + tk === '\n\n')
+				continue;
+			if (/^([-~—–|]|\n)$/.test(tk)) {
+				if (score.length) score[score.length - 1].beats++;
+				continue;
+			}
+			const m = tk.match(/^(#?)([0-7])([.']*)$/);
+			if (!m) continue;
+			const [, sharpMark, digit, dots] = m;
+			if (digit === '0') {
+				score.push({ token: tk, midi: null, beats: 1 });
+				continue;
+			}
+			const offsets = [0, 2, 4, 5, 7, 9, 11];
+			let midi = 60 + offsets[parseInt(digit) - 1];
+			if (sharpMark) midi += 1;
+			for (const ch of dots) midi += ch === '.' ? -12 : 12;
+			score.push({ token: tk, midi, beats: 1 });
+		}
+		return score;
+	}
+
+	renderScoreStrip() {
+		const strip = document.getElementById('score-strip');
+		strip.innerHTML = '';
+		this.score.forEach((item, i) => {
+			const chip = document.createElement('span');
+			chip.className = 'score-chip';
+			if (item.midi === null) chip.classList.add('rest');
+			chip.textContent = item.token;
+			chip.dataset.index = i;
+			strip.appendChild(chip);
+		});
+	}
+
+	highlightChip(i) {
+		document.querySelectorAll('.score-chip.current').forEach(c => c.classList.remove('current'));
+		const chip = document.querySelector(`.score-chip[data-index="${i}"]`);
+		if (chip) {
+			chip.classList.add('current');
+			// 仅在谱面显示区内滚动定位，不牵动页面
+			const strip = document.getElementById('score-strip');
+			const target = chip.offsetTop - strip.clientHeight / 2 + chip.offsetHeight / 2;
+			strip.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+		}
+	}
+
+	getKeyEl(midi) {
+		return document.querySelector(`[data-midi="${midi}"]`);
+	}
+
+	async startScore() {
+		this.stopScore();
+		const text = document.getElementById('score-input').value;
+		this.score = this.parseScore(text);
+		if (!this.score.length) return;
+
+		this.followMode = document.getElementById('score-mode').value === 'follow';
+		this.scoreIndex = 0;
+		this.renderScoreStrip();
+
+		if (!this.synth) await this.init();
+
+		if (this.followMode) {
+			this.advanceFollow();
+		} else {
+			this.playStep();
+		}
+	}
+
+	stopScore() {
+		if (this.playTimer) {
+			clearTimeout(this.playTimer);
+			this.playTimer = null;
+		}
+		document.querySelectorAll('.score-chip.current').forEach(c => c.classList.remove('current'));
+		document.querySelectorAll('.key.target').forEach(k => k.classList.remove('target'));
+		this.scoreIndex = 0;
+	}
+
+	// ---- 自动播放 ----
+	playStep() {
+		if (this.scoreIndex >= this.score.length) {
+			this.stopScore();
+			return;
 		}
 
-		stopNote(midiNote) {
-				if (!this.activeNotes.has(midiNote)) return;
+		const item = this.score[this.scoreIndex];
+		const msPerBeat = 60000 / (parseInt(document.getElementById('score-tempo').value) || 100);
+		const duration = item.beats * msPerBeat;
+		this.highlightChip(this.scoreIndex);
+		
+		if (item.midi !== null) {
+			const key = this.getKeyEl(item.midi);
+			this.playNote(item.midi);
+			if (key) key.classList.add('active');
+			this.playTimer = setTimeout(() => {
+				this.stopNote(item.midi, true);
+				if (key) key.classList.remove('active');
+				this.scoreIndex++;
+				this.playStep();
+			}, duration * 0.92);
+		} else {
+			this.playTimer = setTimeout(() => {
+				this.scoreIndex++;
+				this.playStep();
+			}, duration);
+		}
+	}
 
-				const noteData = this.activeNotes.get(midiNote);
+	// ---- 跟弹练习 ----
+	advanceFollow() {
+		// 跳过休止符
+		while (this.scoreIndex < this.score.length && this.score[this.scoreIndex].midi === null) {
+			this.scoreIndex++;
+		}
+		document.querySelectorAll('.key.target').forEach(k => k.classList.remove('target'));
 
-				// If sustain pedal is pressed, add to sustained notes
-				if (this.sustainPedal) {
-						this.sustainedNotes.add(midiNote);
-						noteData.isSustained = true;
-						return;
-				}
-
-				// Release the note
-				this.synth.triggerRelease(noteData.noteName);
-				this.activeNotes.delete(midiNote);
+		if (this.scoreIndex >= this.score.length) {
+			this.stopScore();
+			return;
 		}
 
-		setSustain(isPressed) {
-				this.sustainPedal = isPressed;
+		this.highlightChip(this.scoreIndex);
+		const key = this.getKeyEl(this.score[this.scoreIndex].midi);
+		if (key) key.classList.add('target');
+	}
 
-				// If sustain is released, stop all sustained notes
-				if (!this.sustainPedal) {
-						this.sustainedNotes.forEach(midiNote => {
-								if (this.activeNotes.has(midiNote)) {
-										const noteData = this.activeNotes.get(midiNote);
-										if (noteData.isSustained) {
-												this.synth.triggerRelease(noteData.noteName);
-												this.activeNotes.delete(midiNote);
-										}
-								}
-						});
-						this.sustainedNotes.clear();
-				}
+	checkFollow(midi) {
+		if (!this.followMode || !this.score.length || this.scoreIndex >= this.score.length) return;
+
+		const expected = this.score[this.scoreIndex];
+		if (midi === expected.midi) {
+			this.scoreIndex++;
+			this.advanceFollow();
+		} else {
+			// 弹错：红闪提示
+			const key = this.getKeyEl(midi);
+			if (key) {
+				key.classList.add('wrong');
+				setTimeout(() => key.classList.remove('wrong'), 200);
+			}
 		}
-
-		setupControls() {
-				const volumeSlider = document.getElementById('volume');
-				const reverbSlider = document.getElementById('reverb');
-				const octaveSlider = document.getElementById('octave');
-				const octaveDisplay = document.getElementById('octave-display');
-
-				volumeSlider.addEventListener('input', (e) => {
-						this.volumeLevel = e.target.value / 100;
-						if (this.volume) {
-								this.volume.volume.value = Tone.gainToDb(this.volumeLevel);
-						}
-				});
-
-				reverbSlider.addEventListener('input', (e) => {
-						this.reverbAmount = e.target.value / 100;
-						if (this.reverb) {
-								this.reverb.wet.value = this.reverbAmount;
-						}
-				});
-
-				octaveSlider.addEventListener('input', (e) => {
-						this.octaveShift = parseInt(e.target.value);
-						octaveDisplay.textContent = this.octaveShift;
-				});
-		}
-
-		setupKeyboardListeners() {
-				const keyMap = {
-						'KeyA': 60, // C4
-						'KeyW': 61, // C#4
-						'KeyS': 62, // D4
-						'KeyE': 63, // D#4
-						'KeyD': 64, // E4
-						'KeyF': 65, // F4
-						'KeyT': 66, // F#4
-						'KeyG': 67, // G4
-						'KeyY': 68, // G#4
-						'KeyH': 69, // A4
-						'KeyU': 70, // A#4
-						'KeyJ': 71, // B4
-						'KeyK': 72, // C5
-						'KeyO': 73, // C#5
-						'KeyL': 74, // D5
-						'KeyP': 75, // D#5
-						'Semicolon': 76 // E5
-				};
-
-				const pressedKeys = new Set();
-
-
-				document.addEventListener('keydown', (e) => {
-						if (e.repeat) return;
-
-						// Sustain pedal (Space key) - hold
-						if (e.code === 'Space') {
-								e.preventDefault();
-								if (!this.sustainPedal) {
-										this.setSustain(true);
-								}
-								return;
-						}
-
-						if (pressedKeys.has(e.code)) return;
-
-						const midiNote = keyMap[e.code];
-						if (midiNote) {
-								e.preventDefault();
-								pressedKeys.add(e.code);
-								this.playNote(midiNote, true);
-
-								// Visual feedback
-								const targetMidi = midiNote + (this.octaveShift * 12);
-								const key = document.querySelector(`[data-midi="${targetMidi}"]`);
-								if (key) key.classList.add('active');
-						}
-				});
-
-				document.addEventListener('keyup', (e) => {
-						// Sustain pedal release
-						if (e.code === 'Space') {
-								e.preventDefault();
-								this.setSustain(false);
-								return;
-						}
-
-						const midiNote = keyMap[e.code];
-						if (midiNote) {
-								pressedKeys.delete(e.code);
-								this.stopNote(midiNote);
-
-								// Remove visual feedback
-								const targetMidi = midiNote + (this.octaveShift * 12);
-								const key = document.querySelector(`[data-midi="${targetMidi}"]`);
-								if (key) key.classList.remove('active');
-						}
-				});
-		}
+	}
 }
 
 // Initialize piano when page loads
 document.addEventListener('DOMContentLoaded', () => {
-		new Piano();
+	new Piano();
 });
 
 // Handle page visibility for audio context
 document.addEventListener('visibilitychange', () => {
-		if (document.hidden) {
-				// Stop all playing notes when tab becomes hidden
-				const activeKeys = document.querySelectorAll('.key.active');
-				activeKeys.forEach(key => key.classList.remove('active'));
-		}
+	if (document.hidden) {
+		const activeKeys = document.querySelectorAll('.key.active');
+		activeKeys.forEach(key => key.classList.remove('active'));
+	}
 });
