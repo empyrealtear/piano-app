@@ -11,7 +11,7 @@
 <p align="center">This project is the <b>Piano App</b> web application. It is a beautiful, interactive 88-key piano you can play in your browser!</p>
 
 <p align="center">
-  · <a href="https://empyrealtear.github.io/piano-app">View Demo</a> ·
+  · <a href="https://empyrealtear.github.io/piano-app/index.html">View Demo</a> ·
   <a href="https://github.com/empyrealtear/piano-app/issues">Report Bug / Request Feature</a> ·
 </p>
 
